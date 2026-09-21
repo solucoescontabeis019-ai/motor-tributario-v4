@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Motor Tributário — PDFs</title>
+  <style>
+    :root { --ink:#172033; --blue:#2157d5; --line:#dce2ee; --bg:#f5f7fb; --warn:#8a5100; --ok:#146c43; }
+    * { box-sizing:border-box } body { margin:0; font:15px system-ui,sans-serif; color:var(--ink); background:var(--bg) }
+    header { background:#111d38; color:white; padding:22px max(24px,calc((100% - 1100px)/2)); } header p { margin:6px 0 0; color:#cdd9f4 }
+    main { max-width:1100px; margin:24px auto; padding:0 20px; display:grid; gap:18px }
+    section { background:white; border:1px solid var(--line); border-radius:12px; padding:20px; box-shadow:0 2px 10px #1720330b }
+    h2 { font-size:18px; margin:0 0 14px } p { line-height:1.45 } label { display:grid; gap:6px; font-weight:600 }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; align-items:end }
+    input, select, textarea, button { font:inherit; padding:10px; border-radius:8px; border:1px solid #bdc8dc; background:white }
+    button { cursor:pointer; border:0; background:var(--blue); color:white; font-weight:700 } button.secondary { background:#e9eef9; color:#183a8d }
+    .notice { padding:12px; border-radius:8px; background:#fff6e8; color:var(--warn) } .ok { background:#e9f7ef; color:var(--ok) }
+    .hide { display:none } .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:10px }
+    .card { border:1px solid var(--line); border-radius:9px; padding:12px } .card strong,.card span,.card small { display:block } .card strong { font-size:18px } .card small { color:#596579; margin-top:3px }
+    .duas-colunas { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; margin-top:16px } .tabela-scroll { max-height:420px; overflow:auto; border:1px solid var(--line); border-radius:9px; padding:0 10px } .tabela-scroll h3 { margin:12px 0 0 } @media(max-width:700px){.duas-colunas{grid-template-columns:1fr}}
+    table { width:100%; border-collapse:collapse; margin-top:10px } th,td { padding:9px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top }
+    th { color:#596579; font-size:12px; text-transform:uppercase } code, pre { white-space:pre-wrap; word-break:break-word; font-size:12px }
+    .memoria { margin-top:16px; border:1px solid var(--line); border-radius:9px; padding:14px; overflow-x:auto } .memoria h3 { margin:0 0 4px } .memoria .muted { margin:0; color:#596579; font-size:13px } .memoria .total td { font-weight:800; background:#f2f5fb }
+  </style>
+</head>
+<body>
+  <header><strong>Motor Tributário v4</strong><p>Comparativo assistido por documentos PDF, com conferência antes de qualquer simulação.</p></header>
+  <main>
+    <section>
+      <h2>1. Cliente</h2>
+      <form id="novoCliente" class="grid">
+        <label>CNPJ<input name="cnpj" required placeholder="somente números"></label>
+        <label>Razão social<input name="razao_social" required></label>
+        <button>Cadastrar / selecionar</button>
+      </form>
+      <p id="clienteAtual" class="notice">Cadastre ou selecione um cliente para começar.</p>
+      <div id="clientes"></div>
+    </section>
+
+    <section id="areaCliente" class="hide">
+      <h2>2. Enviar PDF</h2>
+      <form id="upload" class="grid">
+        <label>Tipo<select name="tipo"><option value="pgdas">PGDAS-D</option><option value="entradas">Acompanhamento de entradas</option><option value="saidas">Acompanhamento de saídas</option><option value="servicos_prestados">Serviços prestados</option><option value="fornecedores">Relação de fornecedores</option><option value="clientes">Relação de clientes</option></select></label>
+        <label>Período do relatório<input name="periodo" required value="2026" placeholder="2026 ou 2026-01"></label>
+        <label>Arquivo PDF<input name="arquivo" type="file" accept="application/pdf" required></label>
+        <label title="O PDF anterior continua guardado para auditoria, mas seus valores deixam de ser usados"><input name="substituir" type="checkbox" value="true"> Substituir relatório do mesmo tipo/período</label>
+        <button>Extrair e guardar</button>
+      </form>
+      <p class="notice">O arquivo original é preservado. Extrações parciais ficam para conferência, não para cálculo.</p>
+    </section>
+
+    <section id="painelArea" class="hide">
+      <h2>3. Conferência e prontidão</h2>
+      <div id="painel" class="cards"></div>
+      <div id="documentos"></div>
+      <button class="secondary" id="atualizar">Atualizar painel</button>
+    </section>
+
+    <section id="consolidacaoArea" class="hide">
+      <h2>4. Consolidação documental</h2>
+      <p>Totais extraídos dos PDFs. Valores com leitura parcial aparecem como “para conferência”, sem virar crédito ou imposto automaticamente.</p>
+      <button class="secondary" id="consolidar">Ver totais extraídos</button>
+      <button class="secondary" id="classificar">Consultar CNPJs e regimes</button>
+      <div id="consolidacao" class="cards"></div>
+      <div id="classificacao"></div>
+      <div id="tabelasCreditos" class="duas-colunas"></div>
+    </section>
+
+    <section id="analiseArea" class="hide">
+      <h2>5. Simulação</h2>
+      <p>O sistema só avança quando os PDFs exigidos forem processados. Regras tributárias versionadas e evidências fiscais de créditos continuam obrigatórias.</p>
+      <form id="analise" class="grid"><label>Período da análise<input name="periodo" required value="2026" placeholder="2026"></label><button>Calcular base real e verificar simulação</button></form>
+      <div id="resultado"></div>
+      <h3>Simular híbrido</h3>
+      <p>Os valores abaixo são preenchidos automaticamente pelos PDFs e pela regra de cenário. Primeiro consulte os CNPJs para apurar os créditos de fornecedores e o potencial comercial dos clientes.</p>
+      <form id="hibrido" class="grid">
+        <label>Período<input name="periodo" required value="2026"></label>
+        <label>IBS (decimal)<input name="ibs_aliquota" readonly value="0.001" title="0,001 equivale a 0,1%"></label>
+        <label>CBS (decimal, cenário-base)<input name="cbs_aliquota" readonly value="0.088" title="8,8%; cenário de mercado, não alíquota oficial"></label>
+        <label>DAS remanescente (decimal)<input name="percentual_das_remanescente" readonly placeholder="Calculando pelos PDFs..."></label>
+        <label>Fonte da alíquota CBS<input name="fonte_cbs" readonly value="Expectativa de mercado - cenário-base 8,8%"></label>
+        <label>Memória do DAS remanescente<input name="fonte_das_remanescente" readonly placeholder="Calculando pelos PDFs..."></label>
+        <button>Calcular comparação</button>
+      </form>
+      <div id="resultadoHibrido"></div>
+    </section>
+  </main>
+<script>
+  let clienteId = null;
+  const $ = s => document.querySelector(s);
+  async function api(url, options={}) { const r=await fetch(url, options); const d=await r.json(); if(!r.ok) throw new Error(d.detail||'Erro na operação'); return d; }
+  function esc(v) { const d=document.createElement('div'); d.textContent=v ?? ''; return d.innerHTML; }
+  function mensagem(texto, ok=false) { $('#clienteAtual').textContent=texto; $('#clienteAtual').className=ok?'notice ok':'notice'; }
+  async function listarClientes() {
+    const d=await api('/api/v4/clientes');
+    $('#clientes').innerHTML=d.clientes.length ? '<table><tr><th>Cliente</th><th>CNPJ</th><th></th></tr>'+d.clientes.map(c=>`<tr><td>${esc(c.razao_social)}</td><td>${esc(c.cnpj)}</td><td><button class="secondary selecionar" data-id="${c.id}">Selecionar</button></td></tr>`).join('')+'</table>' : '';
+    document.querySelectorAll('.selecionar').forEach(b=>b.onclick=()=>selecionar(Number(b.dataset.id)));
+  }
+  async function preencherPremissas(){ if(!clienteId) return; try { const periodo=$('#hibrido [name="periodo"]').value; const d=await api(`/api/v4/clientes/${clienteId}/simulacoes/premissas?periodo=${encodeURIComponent(periodo)}`); $('#hibrido [name="percentual_das_remanescente"]').value=d.percentual_das_remanescente; $('#hibrido [name="fonte_das_remanescente"]').value=d.fonte_das_remanescente; } catch(err){ mensagem(`Não foi possível calcular a premissa automática: ${err.message}`); } }
+  async function selecionar(id) { clienteId=id; const d=await api(`/api/v4/clientes/${id}/painel`); mensagem(`${d.cliente.razao_social} — ${d.cliente.cnpj}`,true); ['areaCliente','painelArea','consolidacaoArea','analiseArea'].forEach(x=>$('#'+x).classList.remove('hide')); await atualizar(); await preencherPremissas(); await carregarTabelaCreditos(); }
+  async function atualizar() {
+    if(!clienteId) return; const d=await api(`/api/v4/clientes/${clienteId}/painel`);
+    $('#painel').innerHTML=`<div class="card"><strong>${d.documentos.length}</strong>PDFs enviados</div><div class="card"><strong>${d.pronto_para_simulacao?'Pronto para próxima validação':'Pendente'}</strong>${d.proximo_passo}</div><div class="card"><strong>${d.pendencias.join(', ')||'nenhuma'}</strong>documentos pendentes</div>`;
+    $('#documentos').innerHTML='<table><tr><th>Tipo</th><th>Competência</th><th>Estado</th><th>Extração</th><th></th></tr>'+d.documentos.map(x=>`<tr><td>${esc(x.tipo)}</td><td>${esc(x.periodo)}</td><td>${esc(x.status)}</td><td>${esc(x.status_extracao||'—')} (${esc(x.confianca??'—')})</td><td><button class="secondary reprocessar" data-id="${x.id}">Reprocessar</button> ${x.status!=='processado'?`<button class="secondary confirmar" data-id="${x.id}" data-tipo="${esc(x.tipo)}">Confirmar</button>`:''}</td></tr>`).join('')+'</table>';
+    document.querySelectorAll('.reprocessar').forEach(b=>b.onclick=async()=>{ try { const x=await api(`/api/v4/clientes/${clienteId}/documentos/${b.dataset.id}/reprocessar`,{method:'POST'}); mensagem(x.mensagem,true); await atualizar(); } catch(err){mensagem(err.message)} });
+    document.querySelectorAll('.confirmar').forEach(b=>b.onclick=async()=>{ const total=prompt(`Informe o total conferido para ${b.dataset.tipo} (ex.: 37125,67). Deixe em branco se a confirmação for apenas qualitativa.`); const observacao=prompt('Descreva brevemente como o PDF foi conferido:'); if(observacao===null || observacao.trim().length<3) return mensagem('A confirmação exige uma observação de conferência.'); try { const corpo={observacao:observacao.trim()}; if(total && total.trim()) corpo.total_confirmado=total.replace(/\./g,'').replace(',','.'); const x=await api(`/api/v4/clientes/${clienteId}/documentos/${b.dataset.id}/revisar`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(corpo)}); mensagem(x.mensagem,true); await atualizar(); } catch(err){mensagem(err.message)} });
+  }
+  $('#novoCliente').onsubmit=async e=>{ e.preventDefault(); try { const f=new FormData(e.target), p=new URLSearchParams(f); const d=await api('/api/v4/clientes/novo?'+p,{method:'POST'}); await listarClientes(); await selecionar(d.cliente_id); } catch(err){mensagem(err.message)} };
+  $('#upload').onsubmit=async e=>{ e.preventDefault(); if(!clienteId)return; try { const f=new FormData(e.target), substituir=f.get('substituir')==='true'; const d=await api(`/api/v4/clientes/${clienteId}/documentos/upload?tipo=${encodeURIComponent(f.get('tipo'))}&periodo=${encodeURIComponent(f.get('periodo'))}&substituir=${substituir}`,{method:'POST',body:f}); const troca=d.documentos_substituidos?.length?` Substituiu o(s) PDF(s) ${d.documentos_substituidos.join(', ')} sem apagar a evidência anterior.`:''; mensagem(`PDF recebido: ${d.tipo}. Estado da extração: ${d.extracao.status}.${troca}`,d.status_documento==='processado'); await atualizar(); } catch(err){mensagem(err.message)} };
+  $('#atualizar').onclick=atualizar;
+  const dinheiro=v=>new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(Number(v||0));
+  function card(titulo,valor,nota=''){ return `<div class="card"><strong>${esc(valor)}</strong><span>${esc(titulo)}</span><small>${esc(nota)}</small></div>`; }
+  function tabelaCredito(titulo,itens,rotulo){ return `<div class="tabela-scroll"><h3>${esc(titulo)}</h3><table><tr><th>Razão social</th><th>${esc(rotulo)}</th><th>Regime</th><th>Crédito</th><th>Motivo</th></tr>${itens.map(x=>`<tr><td>${esc(x.razao_social)}<small>${esc(x.cnpj)}</small></td><td>${dinheiro(x.valor)}</td><td>${esc(x.regime)}</td><td>${dinheiro(x.credito.total)}</td><td><small>${esc(x.credito.motivo)}</small></td></tr>`).join('')||'<tr><td colspan="5">Classificação ainda não realizada.</td></tr>'}</table></div>`; }
+  async function carregarTabelaCreditos(){ if(!clienteId)return; try { const d=await api(`/api/v4/clientes/${clienteId}/classificacoes/creditos`); $('#tabelasCreditos').innerHTML=tabelaCredito('Fornecedores - crédito da empresa',d.fornecedores,'Valor gasto')+tabelaCredito('Clientes - crédito potencial',d.clientes,'Vendas e serviços'); } catch(err){$('#tabelasCreditos').innerHTML=`<p class="notice">${esc(err.message)}</p>`} }
+  $('#consolidar').onclick=async()=>{ try { const d=await api(`/api/v4/clientes/${clienteId}/consolidacao`); const m=d.movimentacoes; $('#consolidacao').innerHTML=card('Entradas',dinheiro(m.entradas.total),`${m.entradas.entidades.length} fornecedores`) + card('Saídas',dinheiro(m.saidas.total),`${m.saidas.entidades.length} clientes com CNPJ`) + card('Serviços prestados',dinheiro(m.servicos_prestados.total),`${m.servicos_prestados.entidades.length} tomadores`) + (d.avisos.length?`<div class="notice">Para conferência: ${esc(d.avisos.join(' '))}</div>`:''); } catch(err){$('#consolidacao').innerHTML=`<p class="notice">${esc(err.message)}</p>`} };
+  $('#classificar').onclick=async()=>{ try { $('#classificacao').innerHTML='<p>Consultando CNPJs e atualizando o cadastro...</p>'; const d=await api(`/api/v4/clientes/${clienteId}/classificacoes/atualizar`,{method:'POST'}); const f=d.classificacao_fornecedores, c=d.classificacao_clientes; $('#classificacao').innerHTML=`<div class="cards">${card('Fornecedores consultados',d.fornecedores_consultados,`${f.REGULAR} regulares | ${f.SIMPLES_NACIONAL} Simples | ${f.MEI} MEI | ${f.NAO_VALIDADO} a confirmar`)}${card('Clientes consultados',d.clientes_consultados,`${c.REGULAR} regulares | ${c.SIMPLES_NACIONAL} Simples | ${c.MEI} MEI | ${c.NAO_VALIDADO} a confirmar`)}</div><p class="notice ok">${esc(d.mensagem)}</p>`; await carregarTabelaCreditos(); } catch(err){$('#classificacao').innerHTML=`<p class="notice">${esc(err.message)}</p>`} };
+  $('#analise').onsubmit=async e=>{ e.preventDefault(); try { const p=new FormData(e.target).get('periodo'); $('#hibrido [name="periodo"]').value=p; const d=await api(`/api/v4/clientes/${clienteId}/analises/processar?periodo=${encodeURIComponent(p)}`,{method:'POST'}); const r=d.resultado; const b=r.base_real_2026||{}; let html='<div class="cards">'; if(b.status==='DOCUMENTADO'){ html+=card('Receita real do período',dinheiro(b.receita_total_periodo||b.receita_competencia),`${(b.competencias||[b.competencia_pdf]).join(', ')}`)+card('DAS recolhido',dinheiro(b.das_total_recolhido||b.das_recolhido),'extraído do PGDAS')+card('RBT12 final',dinheiro(b.rbt12_ultima_competencia||b.rbt12),'última competência'); } else { html+=`<div class="notice">${esc(b.motivo||'Base real indisponível.')}</div>`; } html+='</div>'; html+=`<div class="notice"><strong>Simples 2027:</strong> ${esc(r.cenario_simples_2027.motivo)}<br><strong>Híbrido 2027:</strong> ${esc(r.cenario_hibrido_2027.motivo)}</div>`; $('#resultado').innerHTML=html; await preencherPremissas(); } catch(err){$('#resultado').innerHTML=`<p class="notice">${esc(err.message)}</p>`} };
+  $('#hibrido').onsubmit=async e=>{ e.preventDefault(); try { const f=new FormData(e.target); const dados=Object.fromEntries(f); ['ibs_aliquota','cbs_aliquota','percentual_das_remanescente'].forEach(k=>dados[k]=String(dados[k]).replace(',','.')); const d=await api(`/api/v4/clientes/${clienteId}/simulacoes/hibrido?periodo=${encodeURIComponent(dados.periodo)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(dados)}); const positivo=d.recomendacao==='POTENCIALMENTE_VANTAJOSO'; const h=d.hibrido; $('#resultadoHibrido').innerHTML=`<div class="cards">${card('Simples puro',dinheiro(d.simples_puro.total),'referência 2026')}${card('Híbrido',dinheiro(h.total),'DAS remanescente + IBS/CBS líquidos')}${card('Diferença',dinheiro(d.diferenca_vs_simples),positivo?'economia potencial':'custo adicional potencial')}${card('Crédito automático fornecedores',dinheiro(Number(h.ibs_creditos_automaticos)+Number(h.cbs_creditos_automaticos)),`${d.creditos_fornecedores.fornecedores_regulares_validados} fornecedores regulares`) }${card('Crédito potencial aos clientes',dinheiro(d.beneficio_clientes.credito_potencial_ibs_cbs),`${d.beneficio_clientes.clientes_regulares_validados} clientes regulares: saídas e serviços`)}</div><div class="notice ${positivo?'ok':''}"><strong>${positivo?'Potencialmente vantajoso':'Não vantajoso neste cenário'}</strong><br>${esc(d.alerta)}</div>${memoriaCalculo(d)}`; } catch(err){$('#resultadoHibrido').innerHTML=`<p class="notice">${esc(err.message)}</p>`} };
+  function memoriaCalculo(d){ const h=d.hibrido, b=d.base_calculo||{}, p=d.premissas||{}; const linha=(nome,simples,hib,classe='')=>`<tr class="${classe}"><td>${esc(nome)}</td><td>${dinheiro(simples)}</td><td>${dinheiro(hib)}</td></tr>`; return `<div class="memoria"><h3>Memória de cálculo - comparação dos regimes</h3><p class="muted">Período ${esc(d.periodo)} | IBS ${(Number(p.ibs_aliquota||0)*100).toLocaleString('pt-BR')}% | CBS ${(Number(p.cbs_aliquota||0)*100).toLocaleString('pt-BR')}% | DAS remanescente ${(Number(p.percentual_das_remanescente||0)*100).toLocaleString('pt-BR')}%</p><table><tr><th>Componente</th><th>Simples Nacional</th><th>Híbrido</th></tr>${linha('Receita considerada',b.receita,b.receita)}${linha('DAS',b.das_original,h.das_remanescente)}${linha('IBS - débito','—',h.ibs_debito)}${linha('(-) créditos IBS','—',Number(h.ibs_creditos_automaticos)+Number(h.ibs_creditos_documentados))}${linha('IBS líquido','—',h.ibs_liquido)}${linha('CBS - débito','—',h.cbs_debito)}${linha('(-) créditos CBS','—',Number(h.cbs_creditos_automaticos)+Number(h.cbs_creditos_documentados))}${linha('CBS líquido','—',h.cbs_liquido)}${linha('Total de impostos',d.simples_puro.total,h.total,'total')}${linha('Economia / custo adicional','—',d.diferenca_vs_simples,'total')}</table><p class="muted">Base de compras dos fornecedores regulares: ${dinheiro(d.creditos_fornecedores.base_compras_fornecedores_regulares)}. O crédito potencial aos clientes é comercial e não reduz o imposto da empresa.</p></div>`; }
+  listarClientes().catch(err=>mensagem(err.message));
+</script>
+</body>
+</html>

@@ -1,0 +1,52 @@
+# Ambiente virtual
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Variáveis de ambiente e segredos
+.env
+.env.*
+!.env.example
+
+# Bancos locais
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Uploads e documentos locais
+uploads/
+pdfs/
+PDFs/
+
+# Arquivos temporários
+*.tmp
+*.temp
+*.bak
+*.swp
+.DS_Store
+Thumbs.db
+
+# IDE / editores
+.vscode/
+.idea/
+
+# Arquivos do sistema
+desktop.ini
+
+# Dados locais / dados de análise
+*.csv
+# Backup local do dashboard
+dashboard_v4.ANTES_AUTH.html
+# Dados locais
+*.csv
+
+# An�lises e dados gerados
+ANALISE_JAN_AGO_2026.json
