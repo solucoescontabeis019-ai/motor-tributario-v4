@@ -83,6 +83,7 @@
         <button>Calcular comparação</button>
       </form>
       <div id="resultadoHibrido"></div>
+<div id="relatorioPDF" class="hide"><p id="estadoPDF" role="status"></p><button type="button" class="secondary" id="baixarPDF" disabled>Baixar relatório para o cliente</button></div>
     </section>
   </main>
 <script>
@@ -97,7 +98,7 @@
     document.querySelectorAll('.selecionar').forEach(b=>b.onclick=()=>selecionar(Number(b.dataset.id)));
   }
   async function preencherPremissas(){ if(!clienteId) return; try { const periodo=$('#hibrido [name="periodo"]').value; const d=await api(`/api/v4/clientes/${clienteId}/simulacoes/premissas?periodo=${encodeURIComponent(periodo)}`); $('#hibrido [name="percentual_das_remanescente"]').value=d.percentual_das_remanescente; $('#hibrido [name="fonte_das_remanescente"]').value=d.fonte_das_remanescente; } catch(err){ mensagem(`Não foi possível calcular a premissa automática: ${err.message}`); } }
-  async function selecionar(id) { clienteId=id; const d=await api(`/api/v4/clientes/${id}/painel`); mensagem(`${d.cliente.razao_social} — ${d.cliente.cnpj}`,true); ['areaCliente','painelArea','consolidacaoArea','analiseArea'].forEach(x=>$('#'+x).classList.remove('hide')); await atualizar(); await preencherPremissas(); await carregarTabelaCreditos(); }
+  async function selecionar(id) { limparRelatorioPDF(); clienteId=id; const d=await api(`/api/v4/clientes/${id}/painel`); mensagem(`${d.cliente.razao_social} — ${d.cliente.cnpj}`,true); ['areaCliente','painelArea','consolidacaoArea','analiseArea'].forEach(x=>$('#'+x).classList.remove('hide')); await atualizar(); await preencherPremissas(); await carregarTabelaCreditos(); }
   async function atualizar() {
     if(!clienteId) return; const d=await api(`/api/v4/clientes/${clienteId}/painel`);
     $('#painel').innerHTML=`<div class="card"><strong>${d.documentos.length}</strong>PDFs enviados</div><div class="card"><strong>${d.pronto_para_simulacao?'Pronto para próxima validação':'Pendente'}</strong>${d.proximo_passo}</div><div class="card"><strong>${d.pendencias.join(', ')||'nenhuma'}</strong>documentos pendentes</div>`;
@@ -115,8 +116,55 @@
   $('#consolidar').onclick=async()=>{ try { const d=await api(`/api/v4/clientes/${clienteId}/consolidacao`); const m=d.movimentacoes; $('#consolidacao').innerHTML=card('Entradas',dinheiro(m.entradas.total),`${m.entradas.entidades.length} fornecedores`) + card('Saídas',dinheiro(m.saidas.total),`${m.saidas.entidades.length} clientes com CNPJ`) + card('Serviços prestados',dinheiro(m.servicos_prestados.total),`${m.servicos_prestados.entidades.length} tomadores`) + (d.avisos.length?`<div class="notice">Para conferência: ${esc(d.avisos.join(' '))}</div>`:''); } catch(err){$('#consolidacao').innerHTML=`<p class="notice">${esc(err.message)}</p>`} };
   $('#classificar').onclick=async()=>{ try { $('#classificacao').innerHTML='<p>Consultando CNPJs e atualizando o cadastro...</p>'; const d=await api(`/api/v4/clientes/${clienteId}/classificacoes/atualizar`,{method:'POST'}); const f=d.classificacao_fornecedores, c=d.classificacao_clientes; $('#classificacao').innerHTML=`<div class="cards">${card('Fornecedores consultados',d.fornecedores_consultados,`${f.REGULAR} regulares | ${f.SIMPLES_NACIONAL} Simples | ${f.MEI} MEI | ${f.NAO_VALIDADO} a confirmar`)}${card('Clientes consultados',d.clientes_consultados,`${c.REGULAR} regulares | ${c.SIMPLES_NACIONAL} Simples | ${c.MEI} MEI | ${c.NAO_VALIDADO} a confirmar`)}</div><p class="notice ok">${esc(d.mensagem)}</p>`; await carregarTabelaCreditos(); } catch(err){$('#classificacao').innerHTML=`<p class="notice">${esc(err.message)}</p>`} };
   $('#analise').onsubmit=async e=>{ e.preventDefault(); try { const p=new FormData(e.target).get('periodo'); $('#hibrido [name="periodo"]').value=p; const d=await api(`/api/v4/clientes/${clienteId}/analises/processar?periodo=${encodeURIComponent(p)}`,{method:'POST'}); const r=d.resultado; const b=r.base_real_2026||{}; let html='<div class="cards">'; if(b.status==='DOCUMENTADO'){ html+=card('Receita real do período',dinheiro(b.receita_total_periodo||b.receita_competencia),`${(b.competencias||[b.competencia_pdf]).join(', ')}`)+card('DAS recolhido',dinheiro(b.das_total_recolhido||b.das_recolhido),'extraído do PGDAS')+card('RBT12 final',dinheiro(b.rbt12_ultima_competencia||b.rbt12),'última competência'); } else { html+=`<div class="notice">${esc(b.motivo||'Base real indisponível.')}</div>`; } html+='</div>'; html+=`<div class="notice"><strong>Simples 2027:</strong> ${esc(r.cenario_simples_2027.motivo)}<br><strong>Híbrido 2027:</strong> ${esc(r.cenario_hibrido_2027.motivo)}</div>`; $('#resultado').innerHTML=html; await preencherPremissas(); } catch(err){$('#resultado').innerHTML=`<p class="notice">${esc(err.message)}</p>`} };
-  $('#hibrido').onsubmit=async e=>{ e.preventDefault(); try { const f=new FormData(e.target); const dados=Object.fromEntries(f); ['ibs_aliquota','cbs_aliquota','percentual_das_remanescente'].forEach(k=>dados[k]=String(dados[k]).replace(',','.')); const d=await api(`/api/v4/clientes/${clienteId}/simulacoes/hibrido?periodo=${encodeURIComponent(dados.periodo)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(dados)}); const positivo=d.recomendacao==='POTENCIALMENTE_VANTAJOSO'; const h=d.hibrido; $('#resultadoHibrido').innerHTML=`<div class="cards">${card('Simples puro',dinheiro(d.simples_puro.total),'referência 2026')}${card('Híbrido',dinheiro(h.total),'DAS remanescente + IBS/CBS líquidos')}${card('Diferença',dinheiro(d.diferenca_vs_simples),positivo?'economia potencial':'custo adicional potencial')}${card('Crédito automático fornecedores',dinheiro(Number(h.ibs_creditos_automaticos)+Number(h.cbs_creditos_automaticos)),`${d.creditos_fornecedores.fornecedores_regulares_validados} fornecedores regulares`) }${card('Crédito potencial aos clientes',dinheiro(d.beneficio_clientes.credito_potencial_ibs_cbs),`${d.beneficio_clientes.clientes_regulares_validados} clientes regulares: saídas e serviços`)}</div><div class="notice ${positivo?'ok':''}"><strong>${positivo?'Potencialmente vantajoso':'Não vantajoso neste cenário'}</strong><br>${esc(d.alerta)}</div>${memoriaCalculo(d)}`; } catch(err){$('#resultadoHibrido').innerHTML=`<p class="notice">${esc(err.message)}</p>`} };
+  $('#hibrido').onsubmit=async e=>{ e.preventDefault(); const versaoPDF=limparRelatorioPDF(); try { const f=new FormData(e.target); const dados=Object.fromEntries(f); ['ibs_aliquota','cbs_aliquota','percentual_das_remanescente'].forEach(k=>dados[k]=String(dados[k]).replace(',','.')); const d=await api(`/api/v4/clientes/${clienteId}/simulacoes/hibrido?periodo=${encodeURIComponent(dados.periodo)}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(dados)}); const positivo=d.recomendacao==='POTENCIALMENTE_VANTAJOSO'; const h=d.hibrido; $('#resultadoHibrido').innerHTML=`<div class="cards">${card('Simples puro',dinheiro(d.simples_puro.total),'referência 2026')}${card('Híbrido',dinheiro(h.total),'DAS remanescente + IBS/CBS líquidos')}${card('Diferença',dinheiro(d.diferenca_vs_simples),positivo?'economia potencial':'custo adicional potencial')}${card('Crédito automático fornecedores',dinheiro(Number(h.ibs_creditos_automaticos)+Number(h.cbs_creditos_automaticos)),`${d.creditos_fornecedores.fornecedores_regulares_validados} fornecedores regulares`) }${card('Crédito potencial aos clientes',dinheiro(d.beneficio_clientes.credito_potencial_ibs_cbs),`${d.beneficio_clientes.clientes_regulares_validados} clientes regulares: saídas e serviços`)}</div><div class="notice ${positivo?'ok':''}"><strong>${positivo?'Potencialmente vantajoso':'Não vantajoso neste cenário'}</strong><br>${esc(d.alerta)}</div>${memoriaCalculo(d)}`; prepararRelatorioPDF(dados,d,versaoPDF); } catch(err){$('#resultadoHibrido').innerHTML=`<p class="notice">${esc(err.message)}</p>`} };
   function memoriaCalculo(d){ const h=d.hibrido, b=d.base_calculo||{}, p=d.premissas||{}; const linha=(nome,simples,hib,classe='')=>`<tr class="${classe}"><td>${esc(nome)}</td><td>${dinheiro(simples)}</td><td>${dinheiro(hib)}</td></tr>`; return `<div class="memoria"><h3>Memória de cálculo - comparação dos regimes</h3><p class="muted">Período ${esc(d.periodo)} | IBS ${(Number(p.ibs_aliquota||0)*100).toLocaleString('pt-BR')}% | CBS ${(Number(p.cbs_aliquota||0)*100).toLocaleString('pt-BR')}% | DAS remanescente ${(Number(p.percentual_das_remanescente||0)*100).toLocaleString('pt-BR')}%</p><table><tr><th>Componente</th><th>Simples Nacional</th><th>Híbrido</th></tr>${linha('Receita considerada',b.receita,b.receita)}${linha('DAS',b.das_original,h.das_remanescente)}${linha('IBS - débito','—',h.ibs_debito)}${linha('(-) créditos IBS','—',Number(h.ibs_creditos_automaticos)+Number(h.ibs_creditos_documentados))}${linha('IBS líquido','—',h.ibs_liquido)}${linha('CBS - débito','—',h.cbs_debito)}${linha('(-) créditos CBS','—',Number(h.cbs_creditos_automaticos)+Number(h.cbs_creditos_documentados))}${linha('CBS líquido','—',h.cbs_liquido)}${linha('Total de impostos',d.simples_puro.total,h.total,'total')}${linha('Economia / custo adicional','—',d.diferenca_vs_simples,'total')}</table><p class="muted">Base de compras dos fornecedores regulares: ${dinheiro(d.creditos_fornecedores.base_compras_fornecedores_regulares)}. O crédito potencial aos clientes é comercial e não reduz o imposto da empresa.</p></div>`; }
+
+  // O arquivo é preparado após cada comparação. Falhas de exportação não afetam o cálculo.
+  let geracaoPDF=0, arquivoPDF=null, pedidoPDF=null;
+  function limparRelatorioPDF(){
+    geracaoPDF++;
+    if(arquivoPDF) URL.revokeObjectURL(arquivoPDF);
+    arquivoPDF=null; pedidoPDF=null;
+    $('#relatorioPDF').classList.add('hide'); $('#baixarPDF').disabled=true;
+    return geracaoPDF;
+  }
+  async function prepararRelatorioPDF(parametros,simulacao,versao){
+    if(versao!==geracaoPDF || simulacao.cliente_id!==clienteId) return;
+    $('#relatorioPDF').classList.remove('hide');
+    $('#estadoPDF').textContent='Preparando relatório para envio ao cliente...';
+    $('#baixarPDF').disabled=true;
+    pedidoPDF={parametros,simulacao,versao};
+    try {
+      const r=await fetch(`/api/v4/clientes/${simulacao.cliente_id}/simulacoes/hibrido/relatorio.pdf?periodo=${encodeURIComponent(simulacao.periodo)}`,{
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({parametros,simulacao_exibida:simulacao})
+      });
+      if(!r.ok){let mensagem='Não foi possível gerar o PDF.';try{const erro=await r.json();if(typeof erro.detail==='string')mensagem=erro.detail;}catch(_){} throw new Error(mensagem);}
+      if(!(r.headers.get('content-type')||'').includes('application/pdf'))throw new Error('Resposta de PDF inválida.');
+      const blob=await r.blob();
+      if(versao!==geracaoPDF || simulacao.cliente_id!==clienteId)return;
+      arquivoPDF=URL.createObjectURL(blob);
+      $('#estadoPDF').textContent='Relatório pronto. Confira o PDF antes de enviar ao cliente.';
+      $('#baixarPDF').textContent='Baixar relatório para o cliente'; $('#baixarPDF').disabled=false;
+    }catch(err){
+      if(versao!==geracaoPDF)return;
+      $('#estadoPDF').textContent=err.message;
+      $('#baixarPDF').textContent='Tentar gerar o PDF novamente'; $('#baixarPDF').disabled=false;
+    }
+  }
+  $('#baixarPDF').onclick=()=>{
+    if(!pedidoPDF)return;
+    if(!arquivoPDF){prepararRelatorioPDF(pedidoPDF.parametros,pedidoPDF.simulacao,pedidoPDF.versao);return;}
+    const a=document.createElement('a'); a.href=arquivoPDF;
+    a.download=`relatorio-cliente-${pedidoPDF.simulacao.cliente_id}-${pedidoPDF.simulacao.periodo.replace(/[^0-9A-Za-z-]/g,'-')}.pdf`;
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+  $('#hibrido').addEventListener('input',limparRelatorioPDF);
+  // Mudanças nos documentos, classificações ou na base exigem uma nova comparação.
+  ['upload','analise'].forEach(id=>$('#'+id).addEventListener('submit',limparRelatorioPDF));
+  $('#classificar').addEventListener('click',limparRelatorioPDF);
+  $('#documentos').addEventListener('click',e=>{if(e.target.closest('button'))limparRelatorioPDF();});
+  window.addEventListener('pagehide',limparRelatorioPDF);
+
   listarClientes().catch(err=>mensagem(err.message));
 </script>
 </body>

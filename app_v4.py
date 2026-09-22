@@ -1151,6 +1151,55 @@ async def analise_completa_legado(
     }
 
 
+# Exportação aditiva: reutiliza a simulação sem persistir ou alterar dados.
+class PedidoRelatorioPDF(BaseModel):
+    parametros: ParametrosHibrido
+    simulacao_exibida: Dict[str, Any]
+
+
+@app.post("/api/v4/clientes/{cliente_id}/simulacoes/hibrido/relatorio.pdf")
+async def exportar_relatorio_pdf(
+    cliente_id: int,
+    periodo: str,
+    pedido: PedidoRelatorioPDF,
+    db: Session = Depends(get_db),
+):
+    from relatorio_cliente import gerar_pdf
+    resultado = await simular_hibrido(cliente_id, periodo, pedido.parametros, db)
+    # Nunca emite silenciosamente valores diferentes dos vistos pela contadora.
+    if resultado != pedido.simulacao_exibida:
+        raise HTTPException(status_code=409, detail="Os dados mudaram. Calcule a comparação novamente para gerar o relatório.")
+    cliente = db.query(Client).filter_by(id=cliente_id).first()
+    documentos = db.query(Document).filter_by(cliente_id=cliente_id).all()
+    # O simulador histórico admite fallback de PGDAS. Um PDF para terceiros
+    # exige que a competência indicada corresponda à documentação utilizada.
+    def competencia_pdf(valor):
+        valor = str(valor or "").strip()
+        if re.fullmatch(r"\d{2}/\d{4}", valor):
+            return valor[3:] + "-" + valor[:2]
+        return valor
+    if not re.fullmatch(r"\d{4}|\d{4}-\d{2}|\d{2}/\d{4}", periodo):
+        raise HTTPException(status_code=422, detail="Para o PDF, selecione um ano ou uma competência mensal e calcule novamente.")
+    if len(periodo) != 4:
+        base_pdf = _base_real_pgdas(documentos, periodo)
+        if competencia_pdf(base_pdf.get("competencia_pdf")) != competencia_pdf(periodo):
+            raise HTTPException(status_code=422, detail="O PGDAS usado na comparação não corresponde ao período selecionado. Confira a competência antes de gerar o PDF.")
+    totais = _movimentacao_por_periodo(documentos, {"saidas", "servicos_prestados"}, periodo)
+    entidades = _entidades_extraidas(documentos, {"saidas", "servicos_prestados", "clientes"})
+    nomes = {somente_digitos(c.cnpj): c.razao_social for c in db.query(Customer).filter_by(cliente_id=cliente_id).all()}
+    compradores = [{"cnpj": cnpj, "razao_social": nomes.get(cnpj) or entidades.get(cnpj, {}).get("razao_social") or "Comprador não identificado", "valor": valor} for cnpj, valor in totais.items()]
+    try:
+        pdf = gerar_pdf({"razao_social": cliente.razao_social, "cnpj": cliente.cnpj}, resultado, compradores)
+    except Exception:
+        logger.exception("Falha na geração do relatório PDF do cliente %s", cliente_id)
+        raise HTTPException(status_code=500, detail="Não foi possível gerar o PDF. A simulação permanece disponível.")
+    nome = "relatorio-" + somente_digitos(cliente.cnpj) + "-" + re.sub(r"[^0-9A-Za-z-]", "-", periodo)[:40] + ".pdf"
+    return Response(content=pdf, media_type="application/pdf", headers={
+        "Content-Disposition": 'attachment; filename="' + nome + '"',
+        "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+    })
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
@@ -1159,3 +1208,5 @@ if __name__ == "__main__":
         port=8000,
         log_level="info"
     )
+
+
