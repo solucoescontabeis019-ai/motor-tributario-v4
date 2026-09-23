@@ -2,7 +2,7 @@
 
 Selecione a empresa e, em **4. Consolidação documental**, clique em **Baixar PDF de clientes e fornecedores**.
 
-O PDF apresenta duas seções, com paginação automática: todos os compradores e todos os fornecedores cadastrados para a empresa selecionada. Inclui razão social, CNPJ, período registrado, valor movimentado, regime, validação e crédito estimado do cenário. Registros pendentes e sem movimento também são incluídos. A base é o cadastro consolidado, sem filtro mensal.
+O PDF apresenta duas seções, com paginação automática: compradores e fornecedores cadastrados para a empresa selecionada que possuem valor movimentado acima de R$ 0,00. Inclui razão social, CNPJ, período registrado, valor movimentado, regime, validação e crédito estimado do cenário. A base é o cadastro consolidado, sem filtro mensal.
 
 O crédito reutiliza os cálculos do endpoint de classificação, com as alíquotas informadas no painel. Quando não há cálculo automático elegível, o relatório indica **Não apurado automaticamente**, sem concluir que o direito ao crédito é zero.
 

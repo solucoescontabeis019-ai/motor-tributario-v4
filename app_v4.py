@@ -1208,12 +1208,16 @@ async def exportar_cadastros_pdf(
     cbs_aliquota: Decimal = Query(default=Decimal("0.088"), ge=0, le=1),
     db: Session = Depends(get_db),
 ):
-    """Exporta todos os cadastros da empresa, inclusive pendências e valores zero."""
+    """Exporta os cadastros analisados da empresa com movimentação positiva."""
     cliente = db.query(Client).filter_by(id=cliente_id).first()
     if not cliente:
         raise HTTPException(status_code=404, detail="Cliente não encontrado")
-    fornecedores = db.query(Supplier).filter_by(cliente_id=cliente_id).order_by(Supplier.total_compras.desc(), Supplier.cnpj, Supplier.id).all()
-    compradores = db.query(Customer).filter_by(cliente_id=cliente_id).order_by(Customer.total_faturamento.desc(), Customer.cnpj, Customer.id).all()
+    fornecedores = db.query(Supplier).filter(
+        Supplier.cliente_id == cliente_id, Supplier.total_compras > 0
+    ).order_by(Supplier.total_compras.desc(), Supplier.cnpj, Supplier.id).all()
+    compradores = db.query(Customer).filter(
+        Customer.cliente_id == cliente_id, Customer.total_faturamento > 0
+    ).order_by(Customer.total_faturamento.desc(), Customer.cnpj, Customer.id).all()
     if not fornecedores and not compradores:
         raise HTTPException(status_code=422, detail="Ainda não há clientes ou fornecedores analisados. Use Consultar CNPJs e regimes para preparar os cadastros.")
     calculados = await listar_creditos_por_cnpj(cliente_id, ibs_aliquota, cbs_aliquota, db)
