@@ -64,6 +64,8 @@
       <div id="consolidacao" class="cards"></div>
       <div id="classificacao"></div>
       <div id="tabelasCreditos" class="duas-colunas"></div>
+      <p><button type="button" class="secondary" id="baixarCadastrosPDF">Baixar PDF de clientes e fornecedores</button></p>
+      <p id="estadoCadastrosPDF" role="status"></p>
     </section>
 
     <section id="analiseArea" class="hide">
@@ -98,7 +100,7 @@
     document.querySelectorAll('.selecionar').forEach(b=>b.onclick=()=>selecionar(Number(b.dataset.id)));
   }
   async function preencherPremissas(){ if(!clienteId) return; try { const periodo=$('#hibrido [name="periodo"]').value; const d=await api(`/api/v4/clientes/${clienteId}/simulacoes/premissas?periodo=${encodeURIComponent(periodo)}`); $('#hibrido [name="percentual_das_remanescente"]').value=d.percentual_das_remanescente; $('#hibrido [name="fonte_das_remanescente"]').value=d.fonte_das_remanescente; } catch(err){ mensagem(`Não foi possível calcular a premissa automática: ${err.message}`); } }
-  async function selecionar(id) { limparRelatorioPDF(); clienteId=id; const d=await api(`/api/v4/clientes/${id}/painel`); mensagem(`${d.cliente.razao_social} — ${d.cliente.cnpj}`,true); ['areaCliente','painelArea','consolidacaoArea','analiseArea'].forEach(x=>$('#'+x).classList.remove('hide')); await atualizar(); await preencherPremissas(); await carregarTabelaCreditos(); }
+  async function selecionar(id) { cancelarRelatorioCadastros(); limparRelatorioPDF(); clienteId=id; const d=await api(`/api/v4/clientes/${id}/painel`); mensagem(`${d.cliente.razao_social} — ${d.cliente.cnpj}`,true); ['areaCliente','painelArea','consolidacaoArea','analiseArea'].forEach(x=>$('#'+x).classList.remove('hide')); await atualizar(); await preencherPremissas(); await carregarTabelaCreditos(); }
   async function atualizar() {
     if(!clienteId) return; const d=await api(`/api/v4/clientes/${clienteId}/painel`);
     $('#painel').innerHTML=`<div class="card"><strong>${d.documentos.length}</strong>PDFs enviados</div><div class="card"><strong>${d.pronto_para_simulacao?'Pronto para próxima validação':'Pendente'}</strong>${d.proximo_passo}</div><div class="card"><strong>${d.pendencias.join(', ')||'nenhuma'}</strong>documentos pendentes</div>`;
@@ -164,6 +166,32 @@
   $('#classificar').addEventListener('click',limparRelatorioPDF);
   $('#documentos').addEventListener('click',e=>{if(e.target.closest('button'))limparRelatorioPDF();});
   window.addEventListener('pagehide',limparRelatorioPDF);
+
+
+  let versaoCadastrosPDF=0;
+  function cancelarRelatorioCadastros(){
+    versaoCadastrosPDF++; $('#baixarCadastrosPDF').disabled=false; $('#estadoCadastrosPDF').textContent='';
+  }
+  $('#baixarCadastrosPDF').onclick=async()=>{
+    if(!clienteId)return;
+    const id=clienteId, versao=++versaoCadastrosPDF;
+    $('#baixarCadastrosPDF').disabled=true;
+    $('#estadoCadastrosPDF').textContent='Gerando a relação de clientes e fornecedores...';
+    try{
+      const params=new URLSearchParams();
+      ['ibs_aliquota','cbs_aliquota'].forEach(k=>params.set(k,$('#hibrido [name="'+k+'"]').value.replace(',','.')));
+      const r=await fetch(`/api/v4/clientes/${id}/classificacoes/relatorio.pdf?${params}`);
+      if(!r.ok){let msg='Não foi possível gerar o PDF.';try{const d=await r.json();if(typeof d.detail==='string')msg=d.detail;}catch(_){}throw new Error(msg);}
+      if(!(r.headers.get('content-type')||'').includes('application/pdf'))throw new Error('Resposta de PDF inválida.');
+      const arquivo=await r.blob();
+      if(versao!==versaoCadastrosPDF || id!==clienteId)return;
+      const url=URL.createObjectURL(arquivo), a=document.createElement('a');
+      a.href=url; a.download=`clientes-fornecedores-${id}.pdf`;document.body.appendChild(a);a.click();a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url),10000);
+      $('#estadoCadastrosPDF').textContent='Relatório gerado com os cadastros disponíveis no sistema.';
+    }catch(err){if(versao===versaoCadastrosPDF)$('#estadoCadastrosPDF').textContent=err.message;}
+    finally{if(versao===versaoCadastrosPDF)$('#baixarCadastrosPDF').disabled=false;}
+  };
 
   listarClientes().catch(err=>mensagem(err.message));
 </script>

@@ -1200,6 +1200,47 @@ async def exportar_relatorio_pdf(
     })
 
 
+
+@app.get("/api/v4/clientes/{cliente_id}/classificacoes/relatorio.pdf")
+async def exportar_cadastros_pdf(
+    cliente_id: int,
+    ibs_aliquota: Decimal = Query(default=Decimal("0.001"), ge=0, le=1),
+    cbs_aliquota: Decimal = Query(default=Decimal("0.088"), ge=0, le=1),
+    db: Session = Depends(get_db),
+):
+    """Exporta todos os cadastros da empresa, inclusive pendências e valores zero."""
+    cliente = db.query(Client).filter_by(id=cliente_id).first()
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente não encontrado")
+    fornecedores = db.query(Supplier).filter_by(cliente_id=cliente_id).order_by(Supplier.total_compras.desc(), Supplier.cnpj, Supplier.id).all()
+    compradores = db.query(Customer).filter_by(cliente_id=cliente_id).order_by(Customer.total_faturamento.desc(), Customer.cnpj, Customer.id).all()
+    if not fornecedores and not compradores:
+        raise HTTPException(status_code=422, detail="Ainda não há clientes ou fornecedores analisados. Use Consultar CNPJs e regimes para preparar os cadastros.")
+    calculados = await listar_creditos_por_cnpj(cliente_id, ibs_aliquota, cbs_aliquota, db)
+    def linhas(registros, campo, chave):
+        creditos = {(x["cnpj"], Decimal(x["valor"]), x["regime"], x["status"]): x["credito"] for x in calculados[chave]}
+        resultado = []
+        for item in registros:
+            credito = creditos.get((item.cnpj, Decimal(str(getattr(item, campo) or 0)), item.regime, item.regime_validacao_status), {})
+            resultado.append({"cnpj": item.cnpj, "razao_social": item.razao_social,
+                "periodo": item.periodo, "valor": str(getattr(item, campo) or 0),
+                "regime": item.regime, "status": item.regime_validacao_status,
+                "credito": credito.get("total") if credito.get("elegivel") else None})
+        return resultado
+    from relatorio_cadastros import gerar_pdf_cadastros
+    try:
+        pdf = gerar_pdf_cadastros({"cnpj": cliente.cnpj, "razao_social": cliente.razao_social},
+            [("Clientes analisados", linhas(compradores, "total_faturamento", "clientes")),
+             ("Fornecedores analisados", linhas(fornecedores, "total_compras", "fornecedores"))], ibs_aliquota, cbs_aliquota)
+    except Exception:
+        logger.exception("Falha no PDF de cadastros do cliente %s", cliente_id)
+        raise HTTPException(status_code=500, detail="Não foi possível gerar o relatório. Tente novamente.")
+    return Response(content=pdf, media_type="application/pdf", headers={
+        "Content-Disposition": 'attachment; filename="clientes-fornecedores-' + somente_digitos(cliente.cnpj) + '.pdf"',
+        "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff",
+    })
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
