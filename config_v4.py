@@ -121,6 +121,10 @@ class AppConfig:
     # postgresql:// para a conexão via psycopg2.
     if database_url.startswith("postgres://"):
         database_url = "postgresql://" + database_url[len("postgres://"):]
+    # O SQLAlchemy 2.1 passou a usar o psycopg 3 como driver padrão de
+    # postgresql://. O projeto instala psycopg2-binary, então fixamos o driver.
+    if database_url.startswith("postgresql://"):
+        database_url = "postgresql+psycopg2://" + database_url[len("postgresql://"):]
 
     # ========================================================================
     # APLICAÇÃO
