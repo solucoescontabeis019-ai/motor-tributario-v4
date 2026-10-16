@@ -200,6 +200,28 @@ class DocumentParser:
                     "aliquota_efetiva_percentual": self._clean_currency(aliquota),
                     "das_secao": self._clean_currency(das_secao),
                 })
+            # Histórico mensal de receitas (item 2.2 do Extrato): soma mercado
+            # interno e externo por competência. Permite montar a receita do
+            # ano inteiro a partir de um único PGDAS.
+            receitas_anteriores: Dict[str, float] = {}
+            for rotulo_inicio, rotulo_fim in (
+                (r'2\.2\.1\)\s*Mercado Interno', r'2\.2\.2\)'),
+                (r'2\.2\.2\)\s*Mercado Externo', r'2\.3\)'),
+            ):
+                bloco = re.search(rotulo_inicio + r'(.*?)' + rotulo_fim, full_text, re.DOTALL | re.IGNORECASE)
+                if not bloco:
+                    continue
+                for mes, valor in re.findall(r'(\d{2}/\d{4})\s+([\d.]+,\d{2})', bloco.group(1)):
+                    receitas_anteriores[mes] = round(receitas_anteriores.get(mes, 0.0) + self._clean_currency(valor), 2)
+            result["receitas_anteriores"] = receitas_anteriores
+
+            rba_match = re.search(
+                r'ano-calend[áa]rio corrente \(RBA\)\s+([\d.]+,\d{2})\s+([\d.]+,\d{2})\s+([\d.]+,\d{2})',
+                full_text, re.IGNORECASE,
+            )
+            if rba_match:
+                result["rba_value"] = self._clean_currency(rba_match.group(3))
+
             if not secoes and eh_extrato:
                 # Extrato: cada atividade traz "Receita Bruta Informada: R$ X"
                 # seguida da linha de tributos, cujo último valor é o Total.

@@ -200,8 +200,30 @@ def _base_real_pgdas(documentos: List[Document], periodo: str) -> Dict[str, Any]
             (_decimal_seguro((d.conteudo_parsed or {})["das_value"]) for d in selecionados),
             Decimal("0"),
         )
+        # Receita do ano inteiro: o PGDAS mais recente traz o histórico mensal
+        # (item 2.2 do Extrato) + a receita da própria competência. O DAS só
+        # é conhecido nas competências cujos PGDAS foram enviados, por isso a
+        # simulação continua usando receita e DAS dos mesmos meses.
+        receita_ano = None
+        competencias_receita_ano: List[str] = []
+        historico = dados_ultimo.get("receitas_anteriores") or {}
+        mes_ultimo = str(dados_ultimo.get("mes_competencia") or "")
+        if historico and mes_ultimo.endswith(f"/{ano}"):
+            ultimo_mes_num = int(mes_ultimo[:2])
+            meses_ano = {**{m: v for m, v in historico.items() if m.endswith(f"/{ano}")}}
+            meses_ano[mes_ultimo] = dados_ultimo["receita_periodo_value"]
+            esperados = [f"{m:02d}/{ano}" for m in range(1, ultimo_mes_num + 1)]
+            if all(m in meses_ano for m in esperados):
+                competencias_receita_ano = esperados
+                receita_ano = sum((_decimal_seguro(meses_ano[m]) for m in esperados), Decimal("0"))
+        competencias_das = [
+            str((d.conteudo_parsed or {}).get("mes_competencia") or d.periodo) for d in selecionados
+        ]
         return {
             "status": "DOCUMENTADO",
+            "receita_ano": str(receita_ano.quantize(Decimal("0.01"))) if receita_ano is not None else None,
+            "competencias_receita_ano": competencias_receita_ano,
+            "competencias_das": competencias_das,
             "documento_ids": [d.id for d in selecionados],
             "competencias": [d.periodo for d in selecionados],
             "rbt12_ultima_competencia": str(_decimal_seguro(dados_ultimo["rbt12_value"]).quantize(Decimal("0.01"))),
