@@ -95,13 +95,24 @@ class DocumentParser:
                 if len(pdf.pages) == 0:
                     return self._error_response("PDF vazio")
 
-                # Extrai texto das primeiras 2 páginas
+                # Extrai texto das primeiras páginas. O "Extrato do Simples
+                # Nacional" traz o Total Geral da Empresa na página 2 ou 3.
                 full_text = ""
-                for page in pdf.pages[:2]:
-                    full_text += page.extract_text() or ""
+                for page in pdf.pages[:5]:
+                    full_text += (page.extract_text() or "") + "\n"
 
-            # Busca CNPJ
-            cnpj = self._extract_cnpj(full_text)
+            eh_extrato = "Extrato do Simples Nacional" in full_text
+
+            # Busca CNPJ. No Extrato, o número da apuração (14+ dígitos) vem
+            # antes do CNPJ completo; por isso priorizamos o CNPJ rotulado.
+            cnpj = None
+            cnpj_rotulado = re.search(
+                r'CNPJ(?: Estabelecimento| Matriz)?:\s*(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})', full_text
+            )
+            if cnpj_rotulado:
+                cnpj = re.sub(r'\D', '', cnpj_rotulado.group(1))
+            if not cnpj:
+                cnpj = self._extract_cnpj(full_text)
             if cnpj:
                 result["company_cnpj"] = f"{cnpj[:2]}.{cnpj[2:5]}.{cnpj[5:8]}/{cnpj[8:12]}-{cnpj[12:]}"
 
@@ -109,29 +120,66 @@ class DocumentParser:
             empresa_match = re.search(r'Empresa:\s*(.+?)\s+P[áa]gina:', full_text, re.IGNORECASE)
             if empresa_match:
                 result["company_name"] = empresa_match.group(1).strip()
+            else:
+                nome_match = re.search(
+                    r'Nome Empresarial:\s*(.+?)\s*(?:\n|Data de Abertura|$)', full_text, re.IGNORECASE
+                )
+                if nome_match:
+                    result["company_name"] = nome_match.group(1).strip()
 
             # Busca RBT12
             rbt_pattern = r'\(RBT12\)\s*([\d.,]+)\s+[\d.,]+\s+([\d.,]+)'
             rbt_match = re.search(rbt_pattern, full_text, re.IGNORECASE)
             if rbt_match:
                 result["rbt12_value"] = self._clean_currency(rbt_match.group(2))
+            else:
+                # Extrato: "...doze meses anteriores ao PA <interno> <externo> <total> (RBT12)"
+                rbt_extrato = re.search(
+                    r'anteriores ao PA\s+([\d.]+,\d{2})\s+([\d.]+,\d{2})\s+([\d.]+,\d{2})\s*\(RBT12\)',
+                    full_text, re.IGNORECASE,
+                )
+                if rbt_extrato:
+                    result["rbt12_value"] = self._clean_currency(rbt_extrato.group(3))
 
             rpa_pattern = r'Regime de Compet[êe]ncia\s+([\d.,]+)\s+[\d.,]+\s+([\d.,]+)'
             rpa_match = re.search(rpa_pattern, full_text, re.IGNORECASE)
             if rpa_match:
                 result["receita_periodo_value"] = self._clean_currency(rpa_match.group(2))
+            else:
+                rpa_extrato = re.search(
+                    r'Receita Bruta do PA \(RPA\)\s*-\s*(?:Compet[êe]ncia|Caixa)\s+'
+                    r'([\d.]+,\d{2})\s+([\d.]+,\d{2})\s+([\d.]+,\d{2})',
+                    full_text, re.IGNORECASE,
+                )
+                if rpa_extrato:
+                    result["receita_periodo_value"] = self._clean_currency(rpa_extrato.group(3))
 
             # Busca DAS
             das_pattern = r'Simples Nacional a recolher:\s*([\d.,]+)'
             das_match = re.search(das_pattern, full_text, re.IGNORECASE)
             if das_match:
                 result["das_value"] = self._clean_currency(das_match.group(1))
+            else:
+                # Extrato: linha de valores após "Total Geral da Empresa / Total do
+                # Débito Declarado"; o último número da linha é o Total.
+                das_extrato = re.search(
+                    r'Total Geral da Empresa\s+Total do D[ée]bito Declarado[^\n]*\n[^\n]*Total\s*\n([^\n]+)',
+                    full_text, re.IGNORECASE,
+                )
+                if das_extrato:
+                    numeros = re.findall(r'[\d.]+,\d{2}', das_extrato.group(1))
+                    if numeros:
+                        result["das_value"] = self._clean_currency(numeros[-1])
 
             # A palavra-chave evita capturar parte do CNPJ como competência.
             mes_pattern = r'(?:Per[ií]odo|Compet[êe]ncia):\s*(\d{2})/(\d{4})'
             mes_match = re.search(mes_pattern, full_text)
             if mes_match:
                 result["mes_competencia"] = f"{mes_match.group(1)}/{mes_match.group(2)}"
+            else:
+                pa_match = re.search(r'Per[ií]odo de Apura[çc][ãa]o \(PA\):\s*(\d{2})/(\d{4})', full_text)
+                if pa_match:
+                    result["mes_competencia"] = f"{pa_match.group(1)}/{pa_match.group(2)}"
 
             # A taxa da competência é DAS / RPA; DAS / RBT12 não é alíquota
             # efetiva e não pode alimentar a simulação.
@@ -152,6 +200,22 @@ class DocumentParser:
                     "aliquota_efetiva_percentual": self._clean_currency(aliquota),
                     "das_secao": self._clean_currency(das_secao),
                 })
+            if not secoes and eh_extrato:
+                # Extrato: cada atividade traz "Receita Bruta Informada: R$ X"
+                # seguida da linha de tributos, cujo último valor é o Total.
+                atividade_pattern = (
+                    r'Receita Bruta Informada:\s*R\$\s*([\d.]+,\d{2})\s*\n'
+                    r'[^\n]*Total\s*\n([^\n]+)'
+                )
+                for receita, linha in re.findall(atividade_pattern, full_text, re.IGNORECASE):
+                    numeros = re.findall(r'[\d.]+,\d{2}', linha)
+                    receita_valor = self._clean_currency(receita)
+                    das_valor = self._clean_currency(numeros[-1]) if numeros else 0.0
+                    secoes.append({
+                        "receita_tributada": receita_valor,
+                        "aliquota_efetiva_percentual": round(das_valor / receita_valor * 100, 4) if receita_valor else 0.0,
+                        "das_secao": das_valor,
+                    })
             result["secoes"] = secoes
 
             obrigatorios = ("company_cnpj", "company_name", "mes_competencia")
