@@ -750,6 +750,8 @@ async def reprocessar_documento(
     documento = db.query(Document).filter_by(id=documento_id, cliente_id=cliente_id).first()
     if not documento:
         raise HTTPException(status_code=404, detail="Documento não encontrado")
+    if documento.status == "substituido":
+        raise HTTPException(status_code=422, detail="Documento descartado ou substituído; envie um novo PDF se necessário")
     if not documento.conteudo_raw:
         raise HTTPException(status_code=422, detail="O PDF original não está disponível para reprocessamento")
     try:
@@ -765,6 +767,33 @@ async def reprocessar_documento(
         "status": "sucesso",
         "mensagem": "PDF reprocessado pela versão atual do extrator.",
         "documento": _resumo_documento(documento, incluir_extracao=True),
+    }
+
+
+@app.post("/api/v4/clientes/{cliente_id}/documentos/{documento_id}/descartar")
+async def descartar_documento(
+    cliente_id: int,
+    documento_id: int,
+    motivo: str = Query(default="Descartado pelo usuário"),
+    db: Session = Depends(get_db)
+):
+    """Tira o PDF de todos os cálculos sem apagar o original (fica como evidência)."""
+    documento = db.query(Document).filter_by(id=documento_id, cliente_id=cliente_id).first()
+    if not documento:
+        raise HTTPException(status_code=404, detail="Documento não encontrado")
+    documento.status = "substituido"
+    dados = dict(documento.conteudo_parsed or {})
+    dados["substituicao"] = {
+        "status": "DESCARTADO_PELO_USUARIO",
+        "motivo": motivo,
+        "substituido_em": date.today().isoformat(),
+    }
+    documento.conteudo_parsed = dados
+    db.commit()
+    return {
+        "status": "sucesso",
+        "mensagem": "PDF descartado: não entra mais nos cálculos (o original foi preservado).",
+        "documento": _resumo_documento(documento),
     }
 
 
