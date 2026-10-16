@@ -166,6 +166,88 @@ def _resumo_documento(documento: Document, incluir_extracao: bool = False) -> Di
     return resultado
 
 
+# Tabelas do Simples Nacional (LC 123/2006, redação da LC 155/2016):
+# (limite da faixa de RBT12, alíquota nominal, parcela a deduzir).
+TABELAS_SIMPLES = {
+    "I": [(180000, "0.04", 0), (360000, "0.073", 5940), (720000, "0.095", 13860),
+          (1800000, "0.107", 22500), (3600000, "0.143", 87300), (4800000, "0.19", 378000)],
+    "II": [(180000, "0.045", 0), (360000, "0.078", 5940), (720000, "0.10", 13860),
+           (1800000, "0.112", 22500), (3600000, "0.147", 85500), (4800000, "0.30", 720000)],
+    "III": [(180000, "0.06", 0), (360000, "0.112", 9360), (720000, "0.135", 17640),
+            (1800000, "0.16", 35640), (3600000, "0.21", 125640), (4800000, "0.33", 648000)],
+    "IV": [(180000, "0.045", 0), (360000, "0.09", 8100), (720000, "0.102", 12420),
+           (1800000, "0.14", 39780), (3600000, "0.22", 183780), (4800000, "0.33", 828000)],
+    "V": [(180000, "0.155", 0), (360000, "0.18", 4500), (720000, "0.195", 9900),
+          (1800000, "0.205", 17100), (3600000, "0.23", 62100), (4800000, "0.305", 540000)],
+}
+
+
+def _aliquota_efetiva_simples(rbt12: Decimal, anexo: str) -> Optional[Decimal]:
+    """Alíquota efetiva = (RBT12 x nominal - dedução) / RBT12."""
+    tabela = TABELAS_SIMPLES.get(anexo)
+    if not tabela or rbt12 <= 0:
+        return None
+    for limite, nominal, deduzir in tabela:
+        if rbt12 <= limite:
+            return (rbt12 * Decimal(nominal) - Decimal(deduzir)) / rbt12
+    return None
+
+
+def _das_ano_por_historico(
+    selecionados: List[Document], meses_ano: List[str], historico: Dict[str, Any], anexos: List[str]
+) -> Optional[Dict[str, Any]]:
+    """Completa o DAS dos meses sem PGDAS usando o histórico de receitas.
+
+    Só é usado quando há um único anexo e quando o cálculo reproduz o DAS dos
+    PGDAS enviados (tolerância de R$ 1,00 ou 0,5%). Caso contrário, retorna None.
+    """
+    if len(anexos) != 1:
+        return None
+    anexo = anexos[0]
+    receitas = {m: _decimal_seguro(v) for m, v in historico.items()}
+    documentados: Dict[str, Decimal] = {}
+    for d in selecionados:
+        dados = d.conteudo_parsed or {}
+        mes = str(dados.get("mes_competencia") or "")
+        receitas[mes] = _decimal_seguro(dados.get("receita_periodo_value"))
+        documentados[mes] = _decimal_seguro(dados.get("das_value"))
+
+    def anterior(mes: str, n: int) -> str:
+        m, a = int(mes[:2]), int(mes[3:])
+        total = a * 12 + (m - 1) - n
+        return f"{total % 12 + 1:02d}/{total // 12}"
+
+    memoria = []
+    for mes in sorted(set(meses_ano) | set(documentados), key=lambda x: (x[3:], x[:2])):
+        janela = [anterior(mes, n) for n in range(1, 13)]
+        if any(m not in receitas for m in janela) or mes not in receitas:
+            return None
+        rbt12 = sum((receitas[m] for m in janela), Decimal("0"))
+        aliquota = _aliquota_efetiva_simples(rbt12, anexo)
+        if aliquota is None:
+            return None
+        calculado = (receitas[mes] * aliquota).quantize(Decimal("0.01"))
+        if mes in documentados:
+            real = documentados[mes]
+            if abs(real - calculado) > max(Decimal("1.00"), real * Decimal("0.005")):
+                return None
+        memoria.append({
+            "competencia": mes,
+            "receita": str(receitas[mes].quantize(Decimal("0.01"))),
+            "rbt12": str(rbt12.quantize(Decimal("0.01"))),
+            "aliquota_efetiva": str((aliquota * 100).quantize(Decimal("0.0001"))),
+            "das": str(documentados.get(mes, calculado)),
+            "origem": "PGDAS" if mes in documentados else f"calculado (Anexo {anexo})",
+        })
+    memoria = [m for m in memoria if m["competencia"] in meses_ano]
+    return {
+        "anexo": anexo,
+        "das_total": sum((Decimal(m["das"]) for m in memoria), Decimal("0")),
+        "competencias_calculadas": [m["competencia"] for m in memoria if m["origem"] != "PGDAS"],
+        "memoria": memoria,
+    }
+
+
 def _base_real_pgdas(documentos: List[Document], periodo: str) -> Dict[str, Any]:
     """Monta a base factual de 2026 a partir do PGDAS, sem projetar alíquota."""
     pgdas = [d for d in documentos if d.tipo == "pgdas" and d.status == "processado"]
@@ -219,8 +301,26 @@ def _base_real_pgdas(documentos: List[Document], periodo: str) -> Dict[str, Any]
         competencias_das = [
             str((d.conteudo_parsed or {}).get("mes_competencia") or d.periodo) for d in selecionados
         ]
+        # Ano completo: quando faltam PGDAS de alguns meses, o DAS desses meses
+        # é calculado pela tabela do Simples com o RBT12 do próprio histórico,
+        # desde que o cálculo confira com os PGDAS enviados. Assim receita,
+        # DAS e créditos ficam todos no mesmo período (janeiro até o último PA).
+        das_ano = None
+        if receita_ano is not None:
+            das_ano = _das_ano_por_historico(
+                selecionados, competencias_receita_ano, historico, dados_ultimo.get("anexos") or []
+            )
+        if das_ano is not None:
+            receita_total = receita_ano
+            das_documentado = das_total
+            das_total = das_ano["das_total"]
         return {
             "status": "DOCUMENTADO",
+            "periodo_completo": das_ano is not None,
+            "das_documentado": str(das_documentado.quantize(Decimal("0.01"))) if das_ano is not None else None,
+            "das_competencias_calculadas": das_ano["competencias_calculadas"] if das_ano else [],
+            "das_anexo": das_ano["anexo"] if das_ano else None,
+            "memoria_das_mensal": das_ano["memoria"] if das_ano else [],
             "receita_ano": str(receita_ano.quantize(Decimal("0.01"))) if receita_ano is not None else None,
             "competencias_receita_ano": competencias_receita_ano,
             "competencias_das": competencias_das,

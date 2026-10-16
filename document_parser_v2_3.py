@@ -214,6 +214,7 @@ class DocumentParser:
                 for mes, valor in re.findall(r'(\d{2}/\d{4})\s+([\d.]+,\d{2})', bloco.group(1)):
                     receitas_anteriores[mes] = round(receitas_anteriores.get(mes, 0.0) + self._clean_currency(valor), 2)
             result["receitas_anteriores"] = receitas_anteriores
+            result["anexos"] = sorted(set(re.findall(r'Anexo\s+(V|IV|III|II|I)\b', full_text)))
 
             rba_match = re.search(
                 r'ano-calend[áa]rio corrente \(RBA\)\s+([\d.]+,\d{2})\s+([\d.]+,\d{2})\s+([\d.]+,\d{2})',
