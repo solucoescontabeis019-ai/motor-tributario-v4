@@ -126,6 +126,8 @@ class ParametrosHibrido(BaseModel):
     creditos_cbs_documentados: Decimal = Field(default=Decimal("0"), ge=0)
     fonte_cbs: str = Field(default="Expectativa de mercado - cenário-base 8,8%", min_length=3, max_length=500)
     fonte_das_remanescente: Optional[str] = Field(default=None, max_length=500)
+    # "declarado": DAS do PGDAS; "V": DAS recalculado pelo Anexo V (fator r < 28%).
+    anexo_simples: str = Field(default="declarado", pattern="^(declarado|V)$")
 
 
 def _decimal_seguro(valor: Any) -> Decimal:
@@ -194,7 +196,8 @@ def _aliquota_efetiva_simples(rbt12: Decimal, anexo: str) -> Optional[Decimal]:
 
 
 def _das_ano_por_historico(
-    selecionados: List[Document], meses_ano: List[str], historico: Dict[str, Any], anexos: List[str]
+    selecionados: List[Document], meses_ano: List[str], historico: Dict[str, Any], anexos: List[str],
+    externo: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Completa o DAS dos meses sem PGDAS usando o histórico de receitas.
 
@@ -205,12 +208,17 @@ def _das_ano_por_historico(
         return None
     anexo = anexos[0]
     receitas = {m: _decimal_seguro(v) for m, v in historico.items()}
+    exportacao = {m: _decimal_seguro(v) for m, v in (externo or {}).items()}
     documentados: Dict[str, Decimal] = {}
     for d in selecionados:
         dados = d.conteudo_parsed or {}
         mes = str(dados.get("mes_competencia") or "")
         receitas[mes] = _decimal_seguro(dados.get("receita_periodo_value"))
+        exportacao[mes] = _decimal_seguro(dados.get("receita_periodo_externo"))
         documentados[mes] = _decimal_seguro(dados.get("das_value"))
+    # Mercado interno e externo têm alíquotas apuradas separadamente: a receita
+    # interna usa o RBT12 do mercado interno (confere com o PGDAS).
+    interno = {m: v - exportacao.get(m, Decimal("0")) for m, v in receitas.items()}
 
     def anterior(mes: str, n: int) -> str:
         m, a = int(mes[:2]), int(mes[3:])
@@ -222,12 +230,18 @@ def _das_ano_por_historico(
         janela = [anterior(mes, n) for n in range(1, 13)]
         if any(m not in receitas for m in janela) or mes not in receitas:
             return None
-        rbt12 = sum((receitas[m] for m in janela), Decimal("0"))
+        rbt12 = sum((interno[m] for m in janela), Decimal("0"))
+        if mes not in documentados and exportacao.get(mes, Decimal("0")) > 0:
+            # Exportação tem DAS próprio (sem ISS/PIS/Cofins): exige o PGDAS do mês.
+            return None
         aliquota = _aliquota_efetiva_simples(rbt12, anexo)
         if aliquota is None:
-            return None
-        calculado = (receitas[mes] * aliquota).quantize(Decimal("0.01"))
-        if mes in documentados:
+            if mes in documentados:
+                aliquota = Decimal("0")
+            else:
+                return None
+        calculado = (interno[mes] * aliquota).quantize(Decimal("0.01"))
+        if mes in documentados and exportacao.get(mes, Decimal("0")) == 0:
             real = documentados[mes]
             if abs(real - calculado) > max(Decimal("1.00"), real * Decimal("0.005")):
                 return None
@@ -308,9 +322,35 @@ def _base_real_pgdas(documentos: List[Document], periodo: str) -> Dict[str, Any]
         das_ano = None
         if receita_ano is not None:
             das_ano = _das_ano_por_historico(
-                selecionados, competencias_receita_ano, historico, dados_ultimo.get("anexos") or []
+                selecionados, competencias_receita_ano, historico, dados_ultimo.get("anexos") or [],
+                dados_ultimo.get("receitas_externo") or {},
             )
+        # Exportações do período (imunes a IBS/CBS), nos mesmos meses da receita usada.
+        externo_hist = dict(dados_ultimo.get("receitas_externo") or {})
+        externo_hist[mes_ultimo] = dados_ultimo.get("receita_periodo_externo") or 0
+        receita_exportacao = sum(
+            (_decimal_seguro((d.conteudo_parsed or {}).get("receita_periodo_externo")) for d in selecionados),
+            Decimal("0"),
+        )
+        faltantes = [m for m in competencias_receita_ano if m not in competencias_das]
+        if das_ano is None and faltantes:
+            # Sem o DAS de todos os meses, receita, DAS e créditos do ano não
+            # ficariam no mesmo período: pede os PGDAS em vez de comparar errado.
+            com_exportacao = [m for m in faltantes if _decimal_seguro(externo_hist.get(m)) > 0]
+            meses = com_exportacao or faltantes
+            return {
+                "status": "NAO_DISPONIVEL",
+                "motivo": (
+                    "Para analisar o ano, envie o PGDAS de " + ", ".join(meses) + "."
+                    + (" Esses meses têm exportação, e o DAS deles não pode ser calculado pelo histórico."
+                       if com_exportacao else "")
+                ),
+                "competencias_faltantes": meses,
+            }
         if das_ano is not None:
+            receita_exportacao = sum(
+                (_decimal_seguro(externo_hist.get(m)) for m in competencias_receita_ano), Decimal("0")
+            )
             receita_total = receita_ano
             das_documentado = das_total
             das_total = das_ano["das_total"]
@@ -328,6 +368,11 @@ def _base_real_pgdas(documentos: List[Document], periodo: str) -> Dict[str, Any]
             "competencias": [d.periodo for d in selecionados],
             "rbt12_ultima_competencia": str(_decimal_seguro(dados_ultimo["rbt12_value"]).quantize(Decimal("0.01"))),
             "receita_total_periodo": str(receita_total.quantize(Decimal("0.01"))),
+            "receita_exportacao": str(receita_exportacao.quantize(Decimal("0.01"))),
+            "meses_exportacao_sem_pgdas": [
+                m for m in competencias_receita_ano
+                if _decimal_seguro(externo_hist.get(m)) > 0 and m not in competencias_das
+            ],
             "das_total_recolhido": str(das_total.quantize(Decimal("0.01"))),
             "ultimo_pgdas": {
                 "competencia_pdf": dados_ultimo.get("mes_competencia"),
@@ -347,6 +392,7 @@ def _base_real_pgdas(documentos: List[Document], periodo: str) -> Dict[str, Any]
         "competencia_pdf": dados.get("mes_competencia"),
         "rbt12": str(_decimal_seguro(dados["rbt12_value"]).quantize(Decimal("0.01"))),
         "receita_competencia": str(_decimal_seguro(dados["receita_periodo_value"]).quantize(Decimal("0.01"))),
+        "receita_exportacao": str(_decimal_seguro(dados.get("receita_periodo_externo")).quantize(Decimal("0.01"))),
         "das_recolhido": str(_decimal_seguro(dados["das_value"]).quantize(Decimal("0.01"))),
         "secoes_pgdas": dados.get("secoes", []),
         "observacao": "Valor histórico do PDF; não é uma projeção de 2027.",
@@ -384,7 +430,8 @@ def _periodo_da_operacao(data_emissao: Any, periodo: str) -> bool:
     correspondencia = re.fullmatch(r"(\d{2})/(\d{2})/(\d{4})", texto)
     if not correspondencia:
         return False
-    mes, _, ano = correspondencia.groups()
+    # Os relatórios fiscais brasileiros trazem a data como dd/mm/aaaa.
+    _, mes, ano = correspondencia.groups()
     periodo_normalizado = str(periodo or "").strip()
     if re.fullmatch(r"\d{4}", periodo_normalizado):
         return ano == periodo_normalizado
@@ -411,9 +458,40 @@ def _movimentacao_por_periodo(documentos: List[Document], tipos: set, periodo: s
             cnpj = somente_digitos(operacao.get("cnpj", ""))
             if len(cnpj) != 14:
                 continue
+            if documento.tipo == "entradas" and _entrada_bonificacao(operacao):
+                continue
             valor = _decimal_seguro(operacao.get("valor_contabil", operacao.get("valor", 0)))
             totais[cnpj] = totais.get(cnpj, Decimal("0")) + valor
     return totais
+
+
+def _entrada_bonificacao(operacao: Dict[str, Any]) -> bool:
+    """CFOP x.910 (bonificação, doação ou brinde): entrada sem aquisição onerosa, sem crédito."""
+    return str(operacao.get("cfop") or "").replace(".", "-").endswith("910")
+
+
+def _periodo_competencia_confere(mes_competencia: str, periodo: str) -> bool:
+    p = str(periodo or "").strip()
+    if re.fullmatch(r"\d{4}", p):
+        return mes_competencia.endswith("/" + p)
+    if re.fullmatch(r"\d{4}-\d{2}", p):
+        return mes_competencia == p[5:] + "/" + p[:4]
+    return mes_competencia == p
+
+
+# Parcela de PIS + Cofins na partilha do DAS por faixa (LC 123/2006, Anexos III e V).
+PIS_COFINS_PARTILHA = {
+    "III": ["0.1560", "0.1710", "0.1660", "0.1660", "0.1560"],
+    "V": ["0.1715", "0.1715", "0.1815", "0.1915", "0.1715"],
+}
+LIMITES_FAIXAS = [180000, 360000, 720000, 1800000, 3600000]
+
+
+def _pis_cofins_partilha(rbt12: Decimal, anexo: str) -> Optional[Decimal]:
+    for i, limite in enumerate(LIMITES_FAIXAS):
+        if rbt12 <= limite:
+            return Decimal(PIS_COFINS_PARTILHA[anexo][i])
+    return None
 
 
 def _premissas_automaticas_hibrido(documentos: List[Document], periodo: str) -> Dict[str, Any]:
@@ -421,6 +499,30 @@ def _premissas_automaticas_hibrido(documentos: List[Document], periodo: str) -> 
     base = _base_real_pgdas(documentos, periodo)
     if base.get("status") != "DOCUMENTADO":
         return {"status": "DADOS_INSUFICIENTES", "motivo": base.get("motivo")}
+    # Valor real: em 2027 a CBS substitui PIS/Cofins; quem opta pelo regime
+    # regular de IBS/CBS deixa de recolher essas parcelas no DAS (ISS/ICMS e os
+    # demais tributos continuam no DAS). Usa a partilha declarada no PGDAS.
+    docs_periodo = [
+        d for d in documentos
+        if d.tipo == "pgdas" and d.status == "processado"
+        and _periodo_competencia_confere(str((d.conteudo_parsed or {}).get("mes_competencia") or ""), periodo)
+    ]
+    partilhas = [(d.conteudo_parsed or {}).get("tributos_das") for d in docs_periodo]
+    if docs_periodo and all(partilhas):
+        total = sum((_decimal_seguro(p["total"]) for p in partilhas), Decimal("0"))
+        pis_cofins = sum((_decimal_seguro(p["pis"]) + _decimal_seguro(p["cofins"]) for p in partilhas), Decimal("0"))
+        if total > 0:
+            percentual = ((total - pis_cofins) / total).quantize(Decimal("0.0001"))
+            meses = ", ".join(sorted(str((d.conteudo_parsed or {}).get("mes_competencia")) for d in docs_periodo))
+            return {
+                "status": "CENARIO_APROXIMADO",
+                "percentual_das_remanescente": str(percentual),
+                "fonte_das_remanescente": (
+                    f"PGDAS {meses}: DAS sem as parcelas de PIS e Cofins (substituídas pela CBS); "
+                    "IRPJ, CSLL, CPP e ISS continuam no DAS em 2027."
+                ),
+                "receita_servicos_usada": "0.00",
+            }
     receita = _decimal_seguro(base.get("receita_total_periodo", base.get("receita_competencia")))
     servicos = _movimentacao_por_periodo(documentos, {"servicos_prestados"}, periodo)
     receita_servicos = sum(servicos.values(), Decimal("0"))
@@ -432,8 +534,8 @@ def _premissas_automaticas_hibrido(documentos: List[Document], periodo: str) -> 
         "status": "CENARIO_APROXIMADO",
         "percentual_das_remanescente": str(percentual),
         "fonte_das_remanescente": (
-            "Memória automática do sistema: composição aproximada do DAS, "
-            "ponderada pela receita de serviços extraída dos PDFs."
+            "ESTIMATIVA GENÉRICA (o PGDAS enviado não traz a partilha por tributo): "
+            "composição aproximada do DAS; substitua pelo valor real."
         ),
         "receita_servicos_usada": str(receita_servicos.quantize(Decimal("0.01"))),
     }
@@ -1139,8 +1241,30 @@ async def simular_hibrido(
     if percentual_das is None:
         percentual_das = Decimal(premissas_automaticas["percentual_das_remanescente"])
     fonte_das = parametros.fonte_das_remanescente or premissas_automaticas["fonte_das_remanescente"]
-    receita = _decimal_seguro(base_real.get("receita_total_periodo", base_real.get("receita_competencia")))
+    receita_total = _decimal_seguro(base_real.get("receita_total_periodo", base_real.get("receita_competencia")))
+    # Exportação de serviços é imune a IBS/CBS: fica fora da base do débito.
+    receita_exportacao = min(_decimal_seguro(base_real.get("receita_exportacao")), receita_total)
+    receita = receita_total - receita_exportacao
     das_puro = _decimal_seguro(base_real.get("das_total_recolhido", base_real.get("das_recolhido")))
+    das_declarado = das_puro
+    ajuste_anexo_v = Decimal("0")
+    if parametros.anexo_simples == "V":
+        comparativo = _comparativo_fator_r(documentos, periodo, Decimal("0"))
+        if not comparativo:
+            raise HTTPException(status_code=422, detail="Não foi possível recalcular o DAS pelo Anexo V: falta o histórico de receitas do PGDAS.")
+        ajuste_anexo_v = Decimal(comparativo["total_diferenca"])
+        das_puro = (das_puro + ajuste_anexo_v).quantize(Decimal("0.01"))
+        # DAS remanescente pelo Anexo V: retira PIS/Cofins conforme a partilha do Anexo V.
+        das_v = sum((Decimal(l["das_v"]) for l in comparativo["linhas"]), Decimal("0"))
+        pis_cofins_v = Decimal("0")
+        for l in comparativo["linhas"]:
+            parcela = _pis_cofins_partilha(Decimal(l["rbt12_interno"]), "V")
+            if parcela is None:
+                raise HTTPException(status_code=422, detail="RBT12 fora das faixas da tabela do Simples.")
+            pis_cofins_v += Decimal(l["das_v"]) * parcela
+        if das_v > 0:
+            percentual_das = ((das_v - pis_cofins_v) / das_v).quantize(Decimal("0.0001"))
+            fonte_das = "Anexo V (LC 123/2006): DAS sem as parcelas de PIS e Cofins da partilha, substituídas pela CBS."
     das_remanescente = (das_puro * percentual_das).quantize(Decimal("0.01"))
     ibs_debito = (receita * parametros.ibs_aliquota).quantize(Decimal("0.01"))
     cbs_debito = (receita * parametros.cbs_aliquota).quantize(Decimal("0.01"))
@@ -1187,7 +1311,11 @@ async def simular_hibrido(
         "periodo": periodo,
         "base_calculo": {
             "receita": str(receita.quantize(Decimal("0.01"))),
+            "receita_total": str(receita_total.quantize(Decimal("0.01"))),
+            "receita_exportacao": str(receita_exportacao.quantize(Decimal("0.01"))),
             "das_original": str(das_puro),
+            "das_declarado": str(das_declarado),
+            "ajuste_anexo_v": str(ajuste_anexo_v),
         },
         "premissa_receita": "A receita e o DAS observados em 2026 são repetidos no cenário de 2027.",
         "simples_puro": {"total": str(das_puro)},
@@ -1214,6 +1342,7 @@ async def simular_hibrido(
             "ibs_aliquota": str(parametros.ibs_aliquota), "cbs_aliquota": str(parametros.cbs_aliquota),
             "percentual_das_remanescente": str(percentual_das),
             "fonte_cbs": parametros.fonte_cbs, "fonte_das_remanescente": fonte_das,
+            "anexo_simples": parametros.anexo_simples,
         },
         "alerta": "Cenário técnico. Créditos informados devem corresponder a documentos fiscais válidos e as premissas devem ser aprovadas pela contabilidade antes da opção.",
     }
@@ -1303,9 +1432,85 @@ async def analise_completa_legado(
 
 
 # Exportação aditiva: reutiliza a simulação sem persistir ou alterar dados.
+class ObservacoesRelatorio(BaseModel):
+    """Achados da análise que entram no final do PDF."""
+    fator_r: bool = False
+    folha_12_meses: Decimal = Field(default=Decimal("0"), ge=0)
+    servicos_como_revenda: bool = False
+    texto: str = Field(default="", max_length=3000)
+
+
 class PedidoRelatorioPDF(BaseModel):
     parametros: ParametrosHibrido
     simulacao_exibida: Dict[str, Any]
+    observacoes: Optional[ObservacoesRelatorio] = None
+
+
+def _comparativo_fator_r(documentos: List[Document], periodo: str, folha_12_meses: Decimal) -> Optional[Dict[str, Any]]:
+    """Compara o DAS da receita interna nos Anexos III e V (fator r), mês a mês."""
+    pgdas = [d for d in documentos if d.tipo == "pgdas" and d.status == "processado"]
+    if not pgdas:
+        return None
+    def chave(mes):
+        return (mes[3:], mes[:2])
+    por_mes = {str((d.conteudo_parsed or {}).get("mes_competencia") or ""): (d.conteudo_parsed or {}) for d in pgdas}
+    por_mes.pop("", None)
+    if not por_mes:
+        return None
+    ultimo_mes = max(por_mes, key=chave)
+    ultimo = por_mes[ultimo_mes]
+    total = {m: _decimal_seguro(v) for m, v in (ultimo.get("receitas_anteriores") or {}).items()}
+    externo = {m: _decimal_seguro(v) for m, v in (ultimo.get("receitas_externo") or {}).items()}
+    for mes, dados in por_mes.items():
+        total[mes] = _decimal_seguro(dados.get("receita_periodo_value"))
+        externo[mes] = _decimal_seguro(dados.get("receita_periodo_externo"))
+    interno = {m: v - externo.get(m, Decimal("0")) for m, v in total.items()}
+    p = str(periodo or "").strip()
+    if re.fullmatch(r"\d{4}", p):
+        meses = [m for m in sorted(interno, key=chave) if m.endswith("/" + p) and chave(m) <= chave(ultimo_mes)]
+    elif re.fullmatch(r"\d{2}/\d{4}", p):
+        meses = [p]
+    elif re.fullmatch(r"\d{4}-\d{2}", p):
+        meses = [p[5:] + "/" + p[:4]]
+    else:
+        return None
+
+    def anterior(mes, n):
+        t = int(mes[3:]) * 12 + int(mes[:2]) - 1 - n
+        return f"{t % 12 + 1:02d}/{t // 12}"
+
+    linhas = []
+    for mes in meses:
+        janela = [anterior(mes, n) for n in range(1, 13)]
+        if mes not in interno or any(m not in interno for m in janela):
+            continue
+        rbt12 = sum((interno[m] for m in janela), Decimal("0"))
+        a3, a5 = _aliquota_efetiva_simples(rbt12, "III"), _aliquota_efetiva_simples(rbt12, "V")
+        if a3 is None or a5 is None:
+            continue
+        d3 = (interno[mes] * a3).quantize(Decimal("0.01"))
+        d5 = (interno[mes] * a5).quantize(Decimal("0.01"))
+        linhas.append({
+            "competencia": mes, "receita_interna": str(interno[mes]), "rbt12_interno": str(rbt12),
+            "aliquota_iii": str((a3 * 100).quantize(Decimal("0.001"))), "aliquota_v": str((a5 * 100).quantize(Decimal("0.001"))),
+            "das_iii": str(d3), "das_v": str(d5), "diferenca": str(d5 - d3),
+            "exportacao": externo.get(mes, Decimal("0")) > 0,
+        })
+    if not linhas:
+        return None
+    rbt12_total = _decimal_seguro(ultimo.get("rbt12_value"))
+    fator = (folha_12_meses / rbt12_total) if rbt12_total > 0 else Decimal("0")
+    return {
+        "linhas": linhas,
+        "total_iii": str(sum(Decimal(l["das_iii"]) for l in linhas)),
+        "total_v": str(sum(Decimal(l["das_v"]) for l in linhas)),
+        "total_diferenca": str(sum(Decimal(l["diferenca"]) for l in linhas)),
+        "folha_12_meses": str(folha_12_meses),
+        "rbt12_total": str(rbt12_total),
+        "fator_r": str(fator),
+        "folha_minima_28": str((rbt12_total * Decimal("0.28")).quantize(Decimal("0.01"))),
+        "anexos_declarados": ultimo.get("anexos") or [],
+    }
 
 
 @app.post("/api/v4/clientes/{cliente_id}/simulacoes/hibrido/relatorio.pdf")
@@ -1338,9 +1543,56 @@ async def exportar_relatorio_pdf(
     totais = _movimentacao_por_periodo(documentos, {"saidas", "servicos_prestados"}, periodo)
     entidades = _entidades_extraidas(documentos, {"saidas", "servicos_prestados", "clientes"})
     nomes = {somente_digitos(c.cnpj): c.razao_social for c in db.query(Customer).filter_by(cliente_id=cliente_id).all()}
+    # Notas de entrada (compras e serviços tomados) do período, uma a uma,
+    # com a mesma regra de crédito usada na simulação.
+    fornecedores = {somente_digitos(f.cnpj): f for f in db.query(Supplier).filter_by(cliente_id=cliente_id).all()}
+    rotulos_regime = {"SIMPLES_NACIONAL": "Simples Nacional", "MEI": "MEI", "REGULAR": "Regime regular"}
+    notas_entrada = []
+    for documento in documentos:
+        if documento.tipo != "entradas" or documento.status == "substituido":
+            continue
+        for operacao in (documento.conteudo_parsed or {}).get("operacoes", []):
+            if not _periodo_da_operacao(operacao.get("data_emissao"), periodo):
+                continue
+            cnpj = somente_digitos(operacao.get("cnpj", ""))
+            if len(cnpj) != 14:
+                continue
+            valor = _decimal_seguro(operacao.get("valor_contabil", operacao.get("valor", 0)))
+            fornecedor = fornecedores.get(cnpj)
+            regime = fornecedor.regime if fornecedor else None
+            validado = bool(fornecedor and fornecedor.regime_validacao_status == "validado")
+            bonificacao = _entrada_bonificacao(operacao)
+            com_credito = regime == "REGULAR" and validado and valor > 0 and not bonificacao
+            if com_credito:
+                motivo = "Regime regular"
+            elif bonificacao:
+                motivo = "Bonificação (CFOP x.910)"
+            elif valor <= 0:
+                motivo = "Valor zerado ou devolução"
+            elif not validado:
+                motivo = "Regime não validado"
+            else:
+                motivo = rotulos_regime.get(regime, regime or "Regime não identificado")
+            notas_entrada.append({
+                "data": operacao.get("data_emissao") or "",
+                "cnpj": cnpj,
+                "razao_social": (fornecedor.razao_social if fornecedor else None) or operacao.get("razao_social") or "Fornecedor não identificado",
+                "valor": valor,
+                "com_credito": com_credito,
+                "motivo": motivo,
+                "cfop": operacao.get("cfop") or "",
+            })
     compradores = [{"cnpj": cnpj, "razao_social": nomes.get(cnpj) or entidades.get(cnpj, {}).get("razao_social") or "Comprador não identificado", "valor": valor} for cnpj, valor in totais.items()]
     try:
-        pdf = gerar_pdf({"razao_social": cliente.razao_social, "cnpj": cliente.cnpj}, resultado, compradores)
+        observacoes = None
+        if pedido.observacoes:
+            o = pedido.observacoes
+            observacoes = {
+                "fator_r": _comparativo_fator_r(documentos, periodo, o.folha_12_meses) if o.fator_r else None,
+                "servicos_como_revenda": o.servicos_como_revenda,
+                "texto": o.texto.strip(),
+            }
+        pdf = gerar_pdf({"razao_social": cliente.razao_social, "cnpj": cliente.cnpj}, resultado, compradores, notas_entrada, observacoes)
     except Exception:
         logger.exception("Falha na geração do relatório PDF do cliente %s", cliente_id)
         raise HTTPException(status_code=500, detail="Não foi possível gerar o PDF. A simulação permanece disponível.")

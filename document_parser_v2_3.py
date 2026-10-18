@@ -153,6 +153,7 @@ class DocumentParser:
                 )
                 if rpa_extrato:
                     result["receita_periodo_value"] = self._clean_currency(rpa_extrato.group(3))
+                    result["receita_periodo_externo"] = self._clean_currency(rpa_extrato.group(2))
 
             # Busca DAS
             das_pattern = r'Simples Nacional a recolher:\s*([\d.,]+)'
@@ -170,6 +171,10 @@ class DocumentParser:
                     numeros = re.findall(r'[\d.]+,\d{2}', das_extrato.group(1))
                     if numeros:
                         result["das_value"] = self._clean_currency(numeros[-1])
+                    if len(numeros) == 9:
+                        # Partilha real do DAS declarado, tributo a tributo.
+                        nomes = ("irpj", "csll", "cofins", "pis", "cpp", "icms", "ipi", "iss", "total")
+                        result["tributos_das"] = {n: self._clean_currency(v) for n, v in zip(nomes, numeros)}
 
             # A palavra-chave evita capturar parte do CNPJ como competência.
             mes_pattern = r'(?:Per[ií]odo|Compet[êe]ncia):\s*(\d{2})/(\d{4})'
@@ -204,6 +209,7 @@ class DocumentParser:
             # interno e externo por competência. Permite montar a receita do
             # ano inteiro a partir de um único PGDAS.
             receitas_anteriores: Dict[str, float] = {}
+            receitas_externo: Dict[str, float] = {}
             for rotulo_inicio, rotulo_fim in (
                 (r'2\.2\.1\)\s*Mercado Interno', r'2\.2\.2\)'),
                 (r'2\.2\.2\)\s*Mercado Externo', r'2\.3\)'),
@@ -213,7 +219,11 @@ class DocumentParser:
                     continue
                 for mes, valor in re.findall(r'(\d{2}/\d{4})\s+([\d.]+,\d{2})', bloco.group(1)):
                     receitas_anteriores[mes] = round(receitas_anteriores.get(mes, 0.0) + self._clean_currency(valor), 2)
+                    if 'Externo' in rotulo_inicio:
+                        receitas_externo[mes] = round(receitas_externo.get(mes, 0.0) + self._clean_currency(valor), 2)
             result["receitas_anteriores"] = receitas_anteriores
+            # Exportação (mercado externo) entra no RBT12, mas não tem IBS/CBS.
+            result["receitas_externo"] = receitas_externo
             result["anexos"] = sorted(set(re.findall(r'Anexo\s+(V|IV|III|II|I)\b', full_text)))
 
             rba_match = re.search(
@@ -272,7 +282,7 @@ class DocumentParser:
         """
         return self._parse_movimentacao_pdf(
             file_path, "ACOMPANHAMENTO DE ENTRADAS", "ENTRADAS",
-            cnpj_intervalo=(280, 410), nome_intervalo=(235, 355), valor_intervalo=(450, 535),
+            cnpj_intervalo=(235, 410), nome_intervalo=(235, 355), valor_intervalo=(450, 535),
         )
 
     def _parse_movimentacao_pdf(
@@ -336,16 +346,18 @@ class DocumentParser:
                             self._clean_currency(re.match(r"[\d.,]+", item["text"]).group(0))
                             for item in palavras
                             if valor_intervalo[0] <= item["x0"] <= valor_intervalo[1]
-                            and re.match(r"[\d.,]+(?:ICMS|IPI)?$", item["text"])
+                            and re.match(r"[\d.,]+(?:ICMS|IPI|ISS|DIFALI|INSS-RET)?$", item["text"])
                         ]
                         if not valores:
                             continue
                         datas = [item["text"] for item in palavras if re.fullmatch(r"\d{2}/\d{2}/\d{4}", item["text"])]
+                        cfop = next((item["text"] for item in palavras if re.fullmatch(r"\d-\d{3}", item["text"])), None)
                         operacoes.append({
                             "cnpj": f"{cnpj[:2]}.{cnpj[2:5]}.{cnpj[5:8]}/{cnpj[8:12]}-{cnpj[12:]}",
                             "razao_social": nome[:255],
                             "valor_contabil": valores[0],
                             "data_emissao": datas[0] if datas else None,
+                            "cfop": cfop,
                             "pagina_origem": numero_pagina,
                             "linha_origem": y,
                         })
