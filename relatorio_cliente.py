@@ -244,10 +244,10 @@ def gerar_pdf(cliente, simulacao, compradores, notas_entrada=None, observacoes=N
         "Valores conforme os PDFs enviados ao sistema; cenário de planejamento, sem garantia de economia. "
         '<a href="https://www2.camara.leg.br/legin/fed/leicom/2025/leicomplementar-214-16-janeiro-2025-796905-normaatualizada-pl.html">Base legal: LC 214/2025.</a>', "small")
 
+    from marca import desenhar_marca
+    emitido = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
     def rodape(canvas, doc):
-        canvas.saveState(); canvas.setFont("Helvetica", 8); canvas.setFillColor(azul)
-        canvas.drawString(48, 28, "Motor Tributário | " + datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M UTC"))
-        canvas.drawRightString(A4[0] - 48, 28, str(doc.page)); canvas.restoreState()
-    SimpleDocTemplate(stream, pagesize=A4, leftMargin=48, rightMargin=48, topMargin=40, bottomMargin=44,
+        desenhar_marca(canvas, A4[0], A4[1], 48, "Motor Tributário | " + emitido, f"Página {doc.page}", azul)
+    SimpleDocTemplate(stream, pagesize=A4, leftMargin=48, rightMargin=48, topMargin=76, bottomMargin=58,
                       title="Apuração IBS/CBS - " + cliente["razao_social"], author="Motor Tributário").build(story, onFirstPage=rodape, onLaterPages=rodape)
     return stream.getvalue()

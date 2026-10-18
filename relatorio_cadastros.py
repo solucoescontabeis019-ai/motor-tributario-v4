@@ -52,9 +52,8 @@ def gerar_pdf_cadastros(empresa, grupos, ibs, cbs):
         else:
             elementos.append(p('Fornecedores: a apropriação depende da operação e dos documentos fiscais correspondentes.'))
     emitido=datetime.now(timezone.utc).strftime('%d/%m/%Y %H:%M UTC')
+    from marca import desenhar_marca
     def rodape(canvas,doc):
-        canvas.saveState();canvas.setFont('Helvetica',8);canvas.setFillColor(azul)
-        canvas.drawString(40,22,'Motor Tributário | Emitido em '+emitido)
-        canvas.drawRightString(tamanho[0]-40,22,f'Página {doc.page}');canvas.restoreState()
-    SimpleDocTemplate(saida,pagesize=tamanho,leftMargin=40,rightMargin=40,topMargin=35,bottomMargin=42,title='Clientes e fornecedores analisados',author='Motor Tributário').build(elementos,onFirstPage=rodape,onLaterPages=rodape)
+        desenhar_marca(canvas,tamanho[0],tamanho[1],40,'Motor Tributário | Emitido em '+emitido,f'Página {doc.page}',azul)
+    SimpleDocTemplate(saida,pagesize=tamanho,leftMargin=40,rightMargin=40,topMargin=72,bottomMargin=58,title='Clientes e fornecedores analisados',author='Motor Tributário').build(elementos,onFirstPage=rodape,onLaterPages=rodape)
     return saida.getvalue()
